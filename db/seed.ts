@@ -1,6 +1,7 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
-import { db, sqlite } from "./index";
+import { sql } from "drizzle-orm";
+import { db, pool } from "./index";
 import { products, productVariants, admins } from "./schema";
 
 type SeedProduct = {
@@ -195,18 +196,16 @@ function priceForVolume(basePrice: number, volumeMl: number): number {
 
 async function run() {
   console.log("Bazani tozalash...");
-  sqlite.exec(`
-    DELETE FROM order_items;
-    DELETE FROM orders;
-    DELETE FROM product_variants;
-    DELETE FROM products;
-    DELETE FROM admins;
-    DELETE FROM subscribers;
-  `);
+  // TRUNCATE ... CASCADE — Postgres'da barcha bog'liq jadvallarni (FK orqali)
+  // birgalikda va tezda tozalaydi; qatorma-qator DELETE'dan farqli, buyruqlar
+  // tartibiga bog'liq emas.
+  await db.execute(
+    sql`TRUNCATE TABLE order_items, orders, product_variants, products, admins, subscribers RESTART IDENTITY CASCADE`,
+  );
 
   console.log("Mahsulotlar qo'shilmoqda...");
   for (const p of seedProducts) {
-    const inserted = db
+    const insertedRows = await db
       .insert(products)
       .values({
         slug: p.slug,
@@ -220,19 +219,17 @@ async function run() {
         accentColor: p.accentColor,
         featured: p.featured,
       })
-      .returning()
-      .get();
+      .returning();
+    const inserted = insertedRows[0];
 
     for (const volumeMl of [30, 50, 100]) {
-      db.insert(productVariants)
-        .values({
-          productId: inserted.id,
-          volumeMl,
-          price: priceForVolume(p.basePrice, volumeMl),
-          stock: volumeMl === 100 ? 15 : 30,
-          sku: `${p.slug}-${volumeMl}ml`.toUpperCase(),
-        })
-        .run();
+      await db.insert(productVariants).values({
+        productId: inserted.id,
+        volumeMl,
+        price: priceForVolume(p.basePrice, volumeMl),
+        stock: volumeMl === 100 ? 15 : 30,
+        sku: `${p.slug}-${volumeMl}ml`.toUpperCase(),
+      });
     }
   }
 
@@ -247,17 +244,22 @@ async function run() {
   const username = envUsername || "admin";
   const defaultPassword = envPassword || "Aromato2026!";
   const passwordHash = bcrypt.hashSync(defaultPassword, 10);
-  db.insert(admins)
-    .values({
-      username,
-      passwordHash,
-      name: "Aromato Admin",
-    })
-    .run();
+  await db.insert(admins).values({
+    username,
+    passwordHash,
+    name: "Aromato Admin",
+  });
 
   console.log(`\n${seedProducts.length} ta mahsulot va 1 ta admin yaratildi.`);
   console.log(`Admin login: ${username} / ${defaultPassword}`);
   console.log("MUHIM: production'da ushbu parolni .env orqali albatta o'zgartiring.");
 }
 
-run();
+run()
+  .catch((err) => {
+    console.error("Seed xatosi:", err);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await pool.end();
+  });

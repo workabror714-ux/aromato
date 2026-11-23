@@ -3,6 +3,7 @@
 import { db } from "@/db";
 import { subscribers } from "@/db/schema";
 import { subscribeSchema } from "@/lib/validators";
+import { isUniqueViolation } from "@/db/pg-errors";
 
 export type SubscribeResult = { ok: true } | { ok: false; error: string };
 
@@ -13,13 +14,13 @@ export async function subscribeNewsletter(input: { email: string }): Promise<Sub
   }
 
   try {
-    db.insert(subscribers).values({ email: parsed.data.email }).run();
+    await db.insert(subscribers).values({ email: parsed.data.email });
     return { ok: true };
   } catch (err) {
     // UNIQUE constraint — allaqachon obuna bo'lgan. Foydalanuvchiga xato
     // sifatida emas, muvaffaqiyat sifatida ko'rsatamiz (email manzili allaqachon
     // ro'yxatda ekanini oshkor qilish shart emas).
-    if (err instanceof Error && err.message.includes("UNIQUE")) {
+    if (isUniqueViolation(err)) {
       return { ok: true };
     }
     console.error("[newsletter] obuna xatosi:", err);

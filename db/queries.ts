@@ -24,7 +24,8 @@ export async function listFeaturedProducts(limit = 4): Promise<ProductWithVarian
 }
 
 export async function getProductBySlug(slug: string): Promise<ProductWithVariants | null> {
-  const product = db.select().from(products).where(eq(products.slug, slug)).get();
+  const rows = await db.select().from(products).where(eq(products.slug, slug)).limit(1);
+  const product = rows[0];
   if (!product) return null;
   const variants = await db
     .select()
@@ -34,7 +35,8 @@ export async function getProductBySlug(slug: string): Promise<ProductWithVariant
 }
 
 export async function getProductById(id: number): Promise<ProductWithVariants | null> {
-  const product = db.select().from(products).where(eq(products.id, id)).get();
+  const rows = await db.select().from(products).where(eq(products.id, id)).limit(1);
+  const product = rows[0];
   if (!product) return null;
   const variants = await db
     .select()
@@ -57,14 +59,16 @@ export async function listOrders() {
 }
 
 export async function getOrderByCode(code: string) {
-  const order = db.select().from(orders).where(eq(orders.code, code)).get();
+  const rows = await db.select().from(orders).where(eq(orders.code, code)).limit(1);
+  const order = rows[0];
   if (!order) return null;
   const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
   return { ...order, items };
 }
 
 export async function getOrderById(id: number) {
-  const order = db.select().from(orders).where(eq(orders.id, id)).get();
+  const rows = await db.select().from(orders).where(eq(orders.id, id)).limit(1);
+  const order = rows[0];
   if (!order) return null;
   const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
   return { ...order, items };

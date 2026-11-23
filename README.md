@@ -9,7 +9,7 @@ asl Aromato brendi, ranglari va matnlari bilan qayta ishlab chiqilgan.
 
 - **Next.js 16.4.6** (App Router, Turbopack, Server Actions) + TypeScript
 - **Tailwind CSS v4** (`@theme inline`)
-- **Drizzle ORM** + **better-sqlite3** (fayl asosidagi SQLite, `data/aromato.db`)
+- **Drizzle ORM** + **Postgres** (Vercel-managed Neon integratsiyasi, `@neondatabase/serverless` Pool orqali — WebSocket asosida, haqiqiy tranzaksiya qo'llab-quvvatlaydi)
 - **Zod** — validatsiya, **Zustand** — savat holati (localStorage'da saqlanadi)
 - **jose** (JWT) — admin va Telegram Mini App sessiyalari, **bcryptjs** — parollar
 - **Playwright** — E2E smoke test (`scripts/e2e-smoke.mjs`)
@@ -18,11 +18,15 @@ asl Aromato brendi, ranglari va matnlari bilan qayta ishlab chiqilgan.
 
 ```bash
 npm install
-cp .env.example .env.local   # va qiymatlarni to'ldiring (pastga qarang)
+cp .env.example .env.local   # va DATABASE_URL'ni to'ldiring (Neon connection string)
 npm run db:push              # sxemani bazaga qo'llash
 npm run db:seed              # 12 ta namuna mahsulot + admin foydalanuvchi
 npm run dev                  # http://localhost:3000
 ```
+
+Vercel'ga ulangan loyihada `DATABASE_URL`ni qo'lda yozish shart emas — Neon
+integratsiyasi qo'shilgach, `vercel env pull .env.local` buyrug'i uni
+avtomatik tortib oladi.
 
 Production uchun:
 
@@ -54,7 +58,7 @@ o'zgartirib, bazani qayta seed qilish kifoya.
 
 | O'zgaruvchi | Tavsif |
 |---|---|
-| `DATABASE_URL` | SQLite fayl yo'li (standart: `./data/aromato.db`) |
+| `DATABASE_URL` | Postgres (Neon) connection string |
 | `ADMIN_SESSION_SECRET` / `TELEGRAM_SESSION_SECRET` | JWT imzolash kalitlari — kamida 32 tasodifiy belgi. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` bilan generatsiya qiling |
 | `ADMIN_SEED_USERNAME` / `ADMIN_SEED_PASSWORD` | `db:seed` ishga tushganda yaratiladigan admin login/parol |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ADMIN_CHAT_ID` / `TELEGRAM_WEBHOOK_SECRET` | Telegram integratsiyasi uchun (bo'sh qoldirilsa, bot funksiyalari jim o'tkazib yuboriladi — sayt baribir ishlaydi) |
@@ -89,6 +93,14 @@ masalalar — shaffoflik uchun aniq yozib qo'yilgan:
   Server Action so'rovlarini (masalan, buyurtma yaratish yoki mahsulot
   saqlash) build vaqtidagi natija bilan keshlab qo'yishi mumkin edi — bu haqiqiy,
   qidirib topilgan va tuzatilgan xato edi.
+- **Baza qatlami SQLite'dan Postgres'ga (Neon) ko'chirildi** — Vercel
+  serverless funksiyalari doimiy/umumiy fayl tizimiga ega emas, shuning
+  uchun fayl asosidagi `better-sqlite3` production'da ishlamaydi (yozuvlar
+  invokatsiyalar orasida yo'qolib qolardi). `@neondatabase/serverless`ning
+  `Pool` (WebSocket) drayveri ataylab tanlangan — `neon-http` emas — chunki
+  checkout oqimi (ombor qoldig'ini kamaytirish + buyurtma yaratish) haqiqiy
+  ko'p-bosqichli SQL tranzaksiyasini (`db.transaction`) talab qiladi, buni
+  `neon-http` qo'llamaydi.
 - **Narx formatlash (`lib/money.ts`)** — `Intl.NumberFormat("uz-UZ")` ataylab
   ishlatilmaydi. Aniqlandiki, shu muhitda Next.js'ning server-komponent
   render yo'li va "use client" komponentlarni serverda SSR qilish yo'li

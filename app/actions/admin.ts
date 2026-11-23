@@ -9,6 +9,7 @@ import { admins, products, productVariants, orders } from "@/db/schema";
 import { createAdminSession, getAdminSession, clearAdminSession } from "@/lib/auth";
 import { sendTelegramMessage, ORDER_STATUS_LABELS } from "@/lib/telegram";
 import { loginSchema, productFormSchema, orderStatusSchema, type ProductFormInput } from "@/lib/validators";
+import { isUniqueViolation } from "@/db/pg-errors";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -24,7 +25,8 @@ export async function loginAdmin(
     return { ok: false, error: "Login va parolni kiriting" };
   }
 
-  const admin = db.select().from(admins).where(eq(admins.username, parsed.data.username)).get();
+  const rows = await db.select().from(admins).where(eq(admins.username, parsed.data.username)).limit(1);
+  const admin = rows[0];
   if (!admin) {
     return { ok: false, error: "Login yoki parol noto'g'ri" };
   }
@@ -61,70 +63,74 @@ export async function upsertProduct(input: ProductFormInput): Promise<ActionResu
   const data = parsed.data;
 
   try {
-    if (data.id) {
-      db.update(products)
-        .set({
-          slug: data.slug,
-          name: data.name,
-          brand: data.brand,
-          family: data.family,
-          description: data.description,
-          topNotes: data.topNotes,
-          heartNotes: data.heartNotes,
-          baseNotes: data.baseNotes,
-          accentColor: data.accentColor,
-          featured: data.featured,
-        })
-        .where(eq(products.id, data.id))
-        .run();
+    // Mahsulot + variantlarni bitta tranzaksiyada saqlaymiz: aks holda
+    // mahsulot yangilanib, variantlardan biri xato bersa, baza nomuvofiq
+    // holatda qolib ketishi mumkin edi.
+    await db.transaction(async (tx) => {
+      if (data.id) {
+        await tx
+          .update(products)
+          .set({
+            slug: data.slug,
+            name: data.name,
+            brand: data.brand,
+            family: data.family,
+            description: data.description,
+            topNotes: data.topNotes,
+            heartNotes: data.heartNotes,
+            baseNotes: data.baseNotes,
+            accentColor: data.accentColor,
+            featured: data.featured,
+          })
+          .where(eq(products.id, data.id));
 
-      const existingVariantIds = data.variants.filter((v) => v.id).map((v) => v.id as number);
-      const currentVariants = db
-        .select()
-        .from(productVariants)
-        .where(eq(productVariants.productId, data.id))
-        .all();
-      for (const existing of currentVariants) {
-        if (!existingVariantIds.includes(existing.id)) {
-          db.delete(productVariants).where(eq(productVariants.id, existing.id)).run();
+        const existingVariantIds = data.variants.filter((v) => v.id).map((v) => v.id as number);
+        const currentVariants = await tx
+          .select()
+          .from(productVariants)
+          .where(eq(productVariants.productId, data.id));
+        for (const existing of currentVariants) {
+          if (!existingVariantIds.includes(existing.id)) {
+            await tx.delete(productVariants).where(eq(productVariants.id, existing.id));
+          }
+        }
+        for (const v of data.variants) {
+          if (v.id) {
+            await tx
+              .update(productVariants)
+              .set({ volumeMl: v.volumeMl, price: v.price, stock: v.stock, sku: v.sku })
+              .where(eq(productVariants.id, v.id));
+          } else {
+            await tx
+              .insert(productVariants)
+              .values({ productId: data.id, volumeMl: v.volumeMl, price: v.price, stock: v.stock, sku: v.sku });
+          }
+        }
+      } else {
+        const insertedRows = await tx
+          .insert(products)
+          .values({
+            slug: data.slug,
+            name: data.name,
+            brand: data.brand,
+            family: data.family,
+            description: data.description,
+            topNotes: data.topNotes,
+            heartNotes: data.heartNotes,
+            baseNotes: data.baseNotes,
+            accentColor: data.accentColor,
+            featured: data.featured,
+          })
+          .returning();
+        const inserted = insertedRows[0];
+
+        for (const v of data.variants) {
+          await tx
+            .insert(productVariants)
+            .values({ productId: inserted.id, volumeMl: v.volumeMl, price: v.price, stock: v.stock, sku: v.sku });
         }
       }
-      for (const v of data.variants) {
-        if (v.id) {
-          db.update(productVariants)
-            .set({ volumeMl: v.volumeMl, price: v.price, stock: v.stock, sku: v.sku })
-            .where(eq(productVariants.id, v.id))
-            .run();
-        } else {
-          db.insert(productVariants)
-            .values({ productId: data.id, volumeMl: v.volumeMl, price: v.price, stock: v.stock, sku: v.sku })
-            .run();
-        }
-      }
-    } else {
-      const inserted = db
-        .insert(products)
-        .values({
-          slug: data.slug,
-          name: data.name,
-          brand: data.brand,
-          family: data.family,
-          description: data.description,
-          topNotes: data.topNotes,
-          heartNotes: data.heartNotes,
-          baseNotes: data.baseNotes,
-          accentColor: data.accentColor,
-          featured: data.featured,
-        })
-        .returning()
-        .get();
-
-      for (const v of data.variants) {
-        db.insert(productVariants)
-          .values({ productId: inserted.id, volumeMl: v.volumeMl, price: v.price, stock: v.stock, sku: v.sku })
-          .run();
-      }
-    }
+    });
 
     revalidatePath("/admin/mahsulotlar");
     revalidatePath("/katalog");
@@ -132,9 +138,7 @@ export async function upsertProduct(input: ProductFormInput): Promise<ActionResu
     return { ok: true };
   } catch (err) {
     console.error("[admin] upsertProduct xato:", err);
-    const message = err instanceof Error && err.message.includes("UNIQUE")
-      ? "Bu slug yoki SKU allaqachon band"
-      : "Saqlashda xatolik yuz berdi";
+    const message = isUniqueViolation(err) ? "Bu slug yoki SKU allaqachon band" : "Saqlashda xatolik yuz berdi";
     return { ok: false, error: message };
   }
 }
@@ -142,7 +146,7 @@ export async function upsertProduct(input: ProductFormInput): Promise<ActionResu
 export async function deleteProduct(productId: number): Promise<ActionResult> {
   await requireAdmin();
   try {
-    db.delete(products).where(eq(products.id, productId)).run();
+    await db.delete(products).where(eq(products.id, productId));
     revalidatePath("/admin/mahsulotlar");
     revalidatePath("/katalog");
     return { ok: true };
@@ -161,13 +165,14 @@ export async function updateOrderStatus(orderId: number, status: string): Promis
   if (!parsedStatus.success) return { ok: false, error: "Noto'g'ri holat" };
 
   try {
-    const order = db.select().from(orders).where(eq(orders.id, orderId)).get();
+    const rows = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    const order = rows[0];
     if (!order) return { ok: false, error: "Buyurtma topilmadi" };
 
-    db.update(orders)
+    await db
+      .update(orders)
       .set({ status: parsedStatus.data, updatedAt: new Date() })
-      .where(eq(orders.id, orderId))
-      .run();
+      .where(eq(orders.id, orderId));
 
     revalidatePath("/admin/buyurtmalar");
     revalidatePath(`/buyurtma/${order.code}`);

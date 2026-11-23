@@ -1,8 +1,8 @@
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import { pgTable, text, integer, boolean, timestamp, serial, index } from "drizzle-orm/pg-core";
 
-export const products = sqliteTable("products", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const products = pgTable("products", {
+  id: serial("id").primaryKey(),
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
   brand: text("brand").notNull(),
@@ -13,16 +13,16 @@ export const products = sqliteTable("products", {
   heartNotes: text("heart_notes").notNull(),
   baseNotes: text("base_notes").notNull(),
   accentColor: text("accent_color").notNull(), // BottleArt SVG uchun hex rang
-  featured: integer("featured", { mode: "boolean" }).notNull().default(false),
-  createdAt: integer("created_at", { mode: "timestamp" })
+  featured: boolean("featured").notNull().default(false),
+  createdAt: timestamp("created_at", { mode: "date" })
     .notNull()
-    .default(sql`(unixepoch())`),
+    .default(sql`now()`),
 });
 
-export const productVariants = sqliteTable(
+export const productVariants = pgTable(
   "product_variants",
   {
-    id: integer("id").primaryKey({ autoIncrement: true }),
+    id: serial("id").primaryKey(),
     productId: integer("product_id")
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
@@ -34,10 +34,10 @@ export const productVariants = sqliteTable(
   (t) => [index("product_variants_product_id_idx").on(t.productId)],
 );
 
-export const orders = sqliteTable(
+export const orders = pgTable(
   "orders",
   {
-    id: integer("id").primaryKey({ autoIncrement: true }),
+    id: serial("id").primaryKey(),
     code: text("code").notNull().unique(), // ARM-YYYYMMDD-XXXX
     customerName: text("customer_name").notNull(),
     phone: text("phone").notNull(),
@@ -50,20 +50,20 @@ export const orders = sqliteTable(
     source: text("source").notNull().default("web"), // web | telegram
     telegramUserId: text("telegram_user_id"),
     telegramChatId: text("telegram_chat_id"),
-    createdAt: integer("created_at", { mode: "timestamp" })
+    createdAt: timestamp("created_at", { mode: "date" })
       .notNull()
-      .default(sql`(unixepoch())`),
-    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .default(sql`now()`),
+    updatedAt: timestamp("updated_at", { mode: "date" })
       .notNull()
-      .default(sql`(unixepoch())`),
+      .default(sql`now()`),
   },
   (t) => [index("orders_status_idx").on(t.status)],
 );
 
-export const orderItems = sqliteTable(
+export const orderItems = pgTable(
   "order_items",
   {
-    id: integer("id").primaryKey({ autoIncrement: true }),
+    id: serial("id").primaryKey(),
     orderId: integer("order_id")
       .notNull()
       .references(() => orders.id, { onDelete: "cascade" }),
@@ -79,19 +79,19 @@ export const orderItems = sqliteTable(
   (t) => [index("order_items_order_id_idx").on(t.orderId)],
 );
 
-export const admins = sqliteTable("admins", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const admins = pgTable("admins", {
+  id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   name: text("name").notNull(),
 });
 
-export const subscribers = sqliteTable("subscribers", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const subscribers = pgTable("subscribers", {
+  id: serial("id").primaryKey(),
   email: text("email").notNull().unique(),
-  createdAt: integer("created_at", { mode: "timestamp" })
+  createdAt: timestamp("created_at", { mode: "date" })
     .notNull()
-    .default(sql`(unixepoch())`),
+    .default(sql`now()`),
 });
 
 export type Product = typeof products.$inferSelect;

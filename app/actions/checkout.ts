@@ -1,7 +1,7 @@
 "use server";
 
 import { eq } from "drizzle-orm";
-import { db, sqlite } from "@/db";
+import { db } from "@/db";
 import { products, productVariants, orders, orderItems } from "@/db/schema";
 import { checkoutSchema, type CheckoutInput } from "@/lib/validators";
 import { generateOrderCode } from "@/db/queries";
@@ -16,9 +16,9 @@ export type CheckoutResult =
 /**
  * Buyurtmani serverda yaratadi. Narxlar va mavjudlik HAR DOIM bazadan qayta
  * hisoblanadi — clientdan kelgan narx hech qachon ishonib qabul qilinmaydi.
- * Butun amal bitta SQLite tranzaksiyasida bajariladi: stock kamayishi va
- * buyurtma yaratilishi birgalikda muvaffaqiyatli bo'lishi yoki ikkalasi ham
- * bekor qilinishi kerak.
+ * Butun amal bitta Postgres tranzaksiyasida (BEGIN/COMMIT) bajariladi: stock
+ * kamayishi va buyurtma yaratilishi birgalikda muvaffaqiyatli bo'lishi yoki
+ * ikkalasi ham bekor qilinishi kerak.
  */
 export async function createOrder(input: CheckoutInput): Promise<CheckoutResult> {
   const parsed = checkoutSchema.safeParse(input);
@@ -48,9 +48,9 @@ export async function createOrder(input: CheckoutInput): Promise<CheckoutResult>
     data.telegramChatId = undefined;
   }
 
-  let result: ReturnType<typeof runCheckoutTransaction>;
+  let result: Awaited<ReturnType<typeof runCheckoutTransaction>>;
   try {
-    result = runCheckoutTransaction(data);
+    result = await runCheckoutTransaction(data);
   } catch (err) {
     console.error("[checkout] tranzaksiya xatosi:", err);
     return { ok: false, error: "Buyurtmani saqlashda xatolik yuz berdi. Qayta urinib ko'ring." };
@@ -71,89 +71,88 @@ export async function createOrder(input: CheckoutInput): Promise<CheckoutResult>
   return { ok: true, code: result.code };
 }
 
-function runCheckoutTransaction(data: CheckoutInput) {
-  const transaction = sqlite.transaction(() => {
-    let total = 0;
-    const resolvedItems: {
-      productId: number;
-      variantId: number;
-      productName: string;
-      brand: string;
-      volumeMl: number;
-      unitPrice: number;
-      quantity: number;
-      lineTotal: number;
-    }[] = [];
-
-    for (const item of data.items) {
-      const variant = db
-        .select()
-        .from(productVariants)
-        .where(eq(productVariants.id, item.variantId))
-        .get();
-      if (!variant || variant.productId !== item.productId) {
-        throw new CheckoutError(`Mahsulot variant topilmadi (ID: ${item.variantId})`);
-      }
-      if (variant.stock < item.quantity) {
-        throw new CheckoutError(
-          `"${variant.sku}" uchun omborda yetarli mahsulot yo'q (qoldiq: ${variant.stock})`,
-        );
-      }
-
-      const product = db.select().from(products).where(eq(products.id, item.productId)).get();
-      if (!product) throw new CheckoutError("Mahsulot topilmadi");
-
-      const lineTotal = variant.price * item.quantity;
-      total += lineTotal;
-
-      resolvedItems.push({
-        productId: product.id,
-        variantId: variant.id,
-        productName: product.name,
-        brand: product.brand,
-        volumeMl: variant.volumeMl,
-        unitPrice: variant.price,
-        quantity: item.quantity,
-        lineTotal,
-      });
-
-      db.update(productVariants)
-        .set({ stock: variant.stock - item.quantity })
-        .where(eq(productVariants.id, variant.id))
-        .run();
-    }
-
-    const code = generateOrderCode();
-    const insertedOrder = db
-      .insert(orders)
-      .values({
-        code,
-        customerName: data.customerName,
-        phone: data.phone,
-        region: data.region,
-        address: data.address,
-        note: data.note ?? "",
-        paymentMethod: data.paymentMethod,
-        status: "yangi",
-        totalAmount: total,
-        source: data.source,
-        telegramUserId: data.telegramUserId,
-        telegramChatId: data.telegramChatId,
-      })
-      .returning()
-      .get();
-
-    for (const item of resolvedItems) {
-      db.insert(orderItems)
-        .values({ orderId: insertedOrder.id, ...item })
-        .run();
-    }
-
-    return { code, total, items: resolvedItems };
-  });
-
+async function runCheckoutTransaction(data: CheckoutInput) {
   try {
-    const { code, total, items } = transaction();
+    const { code, total, items } = await db.transaction(async (tx) => {
+      let total = 0;
+      const resolvedItems: {
+        productId: number;
+        variantId: number;
+        productName: string;
+        brand: string;
+        volumeMl: number;
+        unitPrice: number;
+        quantity: number;
+        lineTotal: number;
+      }[] = [];
+
+      for (const item of data.items) {
+        const variantRows = await tx
+          .select()
+          .from(productVariants)
+          .where(eq(productVariants.id, item.variantId))
+          .limit(1);
+        const variant = variantRows[0];
+        if (!variant || variant.productId !== item.productId) {
+          throw new CheckoutError(`Mahsulot variant topilmadi (ID: ${item.variantId})`);
+        }
+        if (variant.stock < item.quantity) {
+          throw new CheckoutError(
+            `"${variant.sku}" uchun omborda yetarli mahsulot yo'q (qoldiq: ${variant.stock})`,
+          );
+        }
+
+        const productRows = await tx.select().from(products).where(eq(products.id, item.productId)).limit(1);
+        const product = productRows[0];
+        if (!product) throw new CheckoutError("Mahsulot topilmadi");
+
+        const lineTotal = variant.price * item.quantity;
+        total += lineTotal;
+
+        resolvedItems.push({
+          productId: product.id,
+          variantId: variant.id,
+          productName: product.name,
+          brand: product.brand,
+          volumeMl: variant.volumeMl,
+          unitPrice: variant.price,
+          quantity: item.quantity,
+          lineTotal,
+        });
+
+        await tx
+          .update(productVariants)
+          .set({ stock: variant.stock - item.quantity })
+          .where(eq(productVariants.id, variant.id));
+      }
+
+      const code = generateOrderCode();
+      const insertedRows = await tx
+        .insert(orders)
+        .values({
+          code,
+          customerName: data.customerName,
+          phone: data.phone,
+          region: data.region,
+          address: data.address,
+          note: data.note ?? "",
+          paymentMethod: data.paymentMethod,
+          status: "yangi",
+          totalAmount: total,
+          source: data.source,
+          telegramUserId: data.telegramUserId,
+          telegramChatId: data.telegramChatId,
+        })
+        .returning();
+      const insertedOrder = insertedRows[0];
+
+      for (const item of resolvedItems) {
+        await tx.insert(orderItems).values({ orderId: insertedOrder.id, ...item });
+      }
+
+      return { code, total, items: resolvedItems };
+    });
+
     return {
       ok: true as const,
       code,
